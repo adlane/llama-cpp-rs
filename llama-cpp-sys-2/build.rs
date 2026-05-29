@@ -202,6 +202,28 @@ fn is_hidden(e: &DirEntry) -> bool {
         .unwrap_or_default()
 }
 
+/// Emit `cargo:rustc-link-*` directives for OpenBLAS (required when `GGML_BLAS=ON`).
+fn link_openblas() {
+    for pkg in ["openblas64", "openblas"] {
+        let output = Command::new("pkg-config").args(["--libs", pkg]).output();
+        let Ok(output) = output else {
+            continue;
+        };
+        if !output.status.success() {
+            continue;
+        }
+        for flag in String::from_utf8_lossy(&output.stdout).split_whitespace() {
+            if let Some(path) = flag.strip_prefix("-L") {
+                println!("cargo:rustc-link-search=native={path}");
+            } else if let Some(lib) = flag.strip_prefix("-l") {
+                println!("cargo:rustc-link-lib=dylib={lib}");
+            }
+        }
+        return;
+    }
+    println!("cargo:rustc-link-lib=dylib=openblas");
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
@@ -647,6 +669,13 @@ fn main() {
         config.define("GGML_BLAS", "OFF");
     }
 
+    if matches!(target_os, TargetOs::Linux) {
+        // sudo apt install libopenblas-dev
+        // sudo apt install libopenblas64-dev
+        config.define("GGML_BLAS", "ON");
+        config.define("GGML_BLAS_VENDOR", "OpenBLAS");
+    }
+
     if (matches!(target_os, TargetOs::Windows(WindowsVariant::Msvc))
         && matches!(
             profile.as_str(),
@@ -1079,6 +1108,9 @@ fn main() {
         }
         TargetOs::Linux => {
             println!("cargo:rustc-link-lib=dylib=stdc++");
+            // ggml-blas is built with GGML_BLAS=ON above; static archives do not
+            // propagate OpenBLAS, so the final binary must link it explicitly.
+            link_openblas();
         }
         TargetOs::Apple(ref variant) => {
             println!("cargo:rustc-link-lib=framework=Foundation");
